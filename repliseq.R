@@ -1,5 +1,5 @@
 setwd("/mnt/e/Workspace/Emily")
-library(randomForest)
+# library(randomForest)
 library(dplyr)
 library(reshape2)
 library(readr)
@@ -14,7 +14,7 @@ library(ggpmisc)
 library(rtracklayer)
 library(ggbeeswarm)
 library(Rtsne)
-devtools::load_all('/mnt/e/Workspace/breaktools/')
+devtools::load_all('breaktools')
 
 liftOverRanges = function(ranges, chain) {
   ranges$ranges_id = 1:length(ranges)
@@ -109,11 +109,11 @@ repliseq_preprocess = function() {
 main = function() {
   m9_m10 = rtracklayer::import.chain("data/mm9/mm9ToMm10.over.chain")
 
-  chromosomes_map_df = readr::read_tsv("data/chromosome_synonyms.tsv")
+  # chromosomes_map_df = readr::read_tsv("data/chromosome_synonyms.tsv")
 
   # Load genome info
   chromsizes_cols = readr::cols(seqnames=col_character(), seqlengths=col_double())
-  genome_info = with(readr::read_tsv("data/mm10/mm10.chrom.sizes", col_names=names(chromsizes_cols$cols), col_types=chromsizes_cols),
+  genome_info = with(readr::read_tsv("data/mm10/annotation/mm10.chrom.sizes", col_names=names(chromsizes_cols$cols), col_types=chromsizes_cols),
            GenomeInfoDb::Seqinfo(seqnames, seqlengths, isCircular=rep(F, length(seqnames)), genome=rep("mm10", length(seqnames))))
   genome_info = genome_info[paste0("chr", c(1:19, "X", "Y"))]
 
@@ -138,28 +138,223 @@ main = function() {
   genome_info_mm9 = genome_info_mm9[paste0("chr", c(1:19, "X", "Y"))]
 
 
-  repeatmasker_df = repeatmasker_read("data/mm10/annotation/ucsc_repeatmasker.tsv")
-  samples_df = readr::read_tsv("data/tlx_samples.tsv")
+  samples_df = readr::read_tsv("data/jiasheng/tlx_samples.tsv")
+  samples_df = data.frame(path=list.files("data/jiasheng/", pattern="*.tlx", full.names=T)) %>%
+    dplyr::mutate(group="APH", sample=path, group_i=1:n(), control=F)
   tlx_df = tlx_read_many(samples_df)
   tlx_df = tlx_remove_rand_chromosomes(tlx_df)
   tlx_df = tlx_mark_bait_junctions(tlx_df, 1.5e6)
   tlx_df = tlx_mark_repeats(tlx_df, repeatmasker_df)
-  # macs_df = tlx_macs2(tlx_df %>% dplyr::filter(tlx_group=="APH" | tlx_group_i==1), effective_size=1.87e9, extsize=1e4, maxgap=4e4, exttype="along", qvalue=0.05, pileup=5, slocal=1e4, llocal=1e7, exclude_bait_region=T, exclude_repeats=T)
-  macs_df = tlx_macs2(tlx_df %>% dplyr::filter(tlx_group=="APH" | tlx_group_i==1), effective_size=1.87e9, extsize=1e4, maxgap=6e4, exttype="symmetrical", qvalue=0.05, pileup=4, slocal=1e6, llocal=1e8, exclude_bait_region=T, exclude_repeats=T)
-  macs_df %>% dplyr::select(macs_group, macs_chrom, macs_start, macs_end, macs_pileup, macs_qvalue)
+  tlx_df = tlx_df %>%
+    dplyr::filter(!tlx_is_bait_junction) %>%
+    dplyr::ungroup()
+  tlx_write_wig(tlx_df, file="all.wig", extsize=10000, exttype="along")
 
-  macs_ranges = GenomicRanges::makeGRangesFromDataFrame(macs_df %>% dplyr::mutate(seqnames=macs_chrom, start=macs_start, end=macs_end), keep.extra.columns=T)
+  #
+  # Read TLX
+  #
+  repeatmasker_df = repeatmasker_read("data/mm10/annotation/ucsc_repeatmasker.tsv")
+  samples_df = readr::read_tsv("data/tlx_samples.tsv")
+  tlx_df = tlx_read_many(samples_df)
+  tlx_df = tlx_remove_rand_chromosomes(tlx_df)
+  tlx_df = tlx_mark_bait_chromosome(tlx_df)
+  tlx_df = tlx_mark_bait_junctions(tlx_df, 1.5e6)
+  tlx_df = tlx_mark_repeats(tlx_df, repeatmasker_df)
+  tlx_df = tlx_df %>%
+    dplyr::filter(tlx_is_bait_chromosome & !tlx_is_bait_junction) %>%
+    dplyr::select(-Seq) %>%
+    dplyr::mutate(tlx_id=1:n()) %>%
+    dplyr::ungroup()
+  tlx_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_df %>% dplyr::mutate(seqnames=Rname, start=Junction, end=Junction), keep.extra.columns=T, ignore.strand=T)
+  libsize_df = tlx_df %>%
+    dplyr::group_by(tlx_group, tlx_group_i) %>%
+    dplyr::summarize(sample_size=sum(!tlx_control), control_size=sum(tlx_control))
 
 
+  #
   # Load repliseq
-  # High-resolution Repli-Seq defines the temporal choreography of initiation, elongation and termination of replication in mammalian cells
+  #
   repliseq_df = readr::read_tsv("data/zhao_bmc_repliseq_2020/preprocessed/repliseq.tsv") %>% dplyr::filter(repliseq_celltype=="npc")
-  repliseqTime_df = readr::read_tsv("data/zhao_bmc_repliseq_2020/preprocessed/repliseqTime.tsv") %>% dplyr::filter(repliseqTime_celltype=="npc")
+  repliseqTime_df = readr::read_tsv("data/zhao_bmc_repliseq_2020/preprocessed/repliseqTime.tsv") %>% dplyr::filter(repliseqTime_celltype=="npc") %>%
+    dplyr::mutate(repliseqTime_id=1:n())
+
+    # Calculate IZ
+  starts = unique(repliseqTime_df$repliseqTime_start)
+  repliseqIZ_df = repliseqTime_df %>%
+    dplyr::rename(iz_chrom="repliseqTime_chrom", iz_celltype="repliseqTime_celltype") %>%
+    dplyr::group_by(iz_chrom, iz_celltype) %>%
+    dplyr::do((function(z){
+      zz<<-z
+      data.frame(iz_start=which(ggpmisc:::find_peaks(17-z$repliseqTime_avg, ignore_threshold = 1/16, span=9, strict=F))) %>%
+      dplyr::mutate(iz_start=z$repliseqTime_start[iz_start])
+    })(.)) %>%
+    dplyr::arrange(iz_start) %>%
+    dplyr::group_by(iz_chrom) %>%
+    dplyr::mutate(iz_cluster=dbscan::dbscan(as.matrix(iz_start), eps=50000*5, minPts=1)$cluster) %>%
+    dplyr::group_by(iz_chrom, iz_cluster) %>%
+    dplyr::mutate(iz_start=starts[which.min(abs(starts-mean(iz_start)))]) %>%
+    dplyr::inner_join(repliseqTime_df %>% dplyr::select(repliseqTime_chrom, repliseqTime_start, repliseqTime_celltype, repliseqTime_avg), by=c("iz_chrom"="repliseqTime_chrom", "iz_start"="repliseqTime_start", "iz_celltype"="repliseqTime_celltype")) %>%
+    dplyr::distinct(iz_chrom, iz_start, iz_celltype, .keep_all=T)
+
+  x = repliseqTime_df %>% dplyr::filter(repliseqTime_chrom=="chr6" & dplyr::between(repliseqTime_start, 66e6, 78e6))
+  y = repliseqIZ_df %>% dplyr::filter(iz_chrom=="chr6" & dplyr::between(iz_start, 66e6, 78e6))
+  ggplot(x) +
+    geom_line(aes(x=repliseqTime_start, y=repliseqTime_avg)) +
+    geom_vline(aes(xintercept=iz_start), data=y)
+
+  ggplot(repliseqTime_df)
+  repliseqIZ_df
+
+
+  repliseqTimeRegions_df = repliseqTime_df %>%
+    dplyr::mutate(repliseqTime_type=factor(repliseqTime_type), repliseqTime_chrom=factor(repliseqTime_chrom)) %>%
+    dplyr::filter(c(T, diff(as.numeric(repliseqTime_type))!=0 | diff(as.numeric(repliseqTime_chrom))!=0)) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(repliseqTime_type=as.character(repliseqTime_type), repliseqTime_chrom=as.character(repliseqTime_chrom)) %>%
+    dplyr::select(repliseqTime_celltype, repliseqTime_chrom, repliseqTime_start, repliseqTime_end, repliseqTime_type)
+  repliseqTimeRegions_df$repliseqTime_type = c(repliseqTimeRegions_df$repliseqTime_type[1], zoo::rollapply(repliseqTimeRegions_df$repliseqTime_type, width=3, align="center", FUN=function(z) ifelse(all(z==c("Late", "Middle", "Late")), "Late", z[1])), rev(repliseqTimeRegions_df$repliseqTime_type)[1])
+  repliseqTimeRegions_df$repliseqTime_type = c(repliseqTimeRegions_df$repliseqTime_type[1], zoo::rollapply(repliseqTimeRegions_df$repliseqTime_type, width=3, align="center", FUN=function(z) ifelse(all(z==c("Early", "Middle", "Early")), "Early", z[1])), rev(repliseqTimeRegions_df$repliseqTime_type)[1])
+  repliseqTimeRegions_df = repliseqTimeRegions_df %>%
+    dplyr::mutate(repliseqTime_type=factor(repliseqTime_type), repliseqTime_chrom=factor(repliseqTime_chrom)) %>%
+    dplyr::filter(c(T, diff(as.numeric(repliseqTime_type))!=0 | diff(as.numeric(repliseqTime_chrom))!=0)) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(repliseqTime_type=as.character(repliseqTime_type), repliseqTime_chrom=as.character(repliseqTime_chrom))
+
+
+    dplyr::inner_join(as.data.frame(genome_info) %>% tibble::rownames_to_column("repliseqTime_chrom"), by=c("repliseqTime_chrom")) %>%
+    dplyr::group_by(repliseqTime_celltype, repliseqTime_chrom) %>%
+    dplyr::mutate(repliseqTime_end=c(repliseqTime_start[2:n()], seqlengths[1])) %>%
+    dplyr::mutate(repliseqTime_nextstart=c(repliseqTime_start[2:n()], NA_integer_), repliseqTime_nextend=c(repliseqTime_end[2:n()], NA_integer_)) %>%
+    dplyr::mutate(repliseqTime_prevstart=c(NA_integer_, repliseqTime_start[1:(n()-1)]), repliseqTime_prevend=c(NA_integer_, repliseqTime_end[1:(n()-1)])) %>%
+    dplyr::mutate(repliseqTime_prevtype=c(NA_character_, repliseqTime_type[1:(n()-1)]), repliseqTime_nexttype=c(repliseqTime_type[2:n()], NA_character_)) %>%
+    dplyr::filter(repliseqTime_type %in% c("Early", "Late"))
+
+  repliseqTimeRegions_df %>%
+    dplyr::filter(repliseqTime_type=="Early") %>%
+    dplyr::inner_join(repliseqTimeRegions_df %>% dplyr::filter(repliseqTime_type=="Middle"), by=c("repliseqTime_celltype", "repliseqTime_chrom", "repliseqTime_start"="repliseqTime_end"))
+
+  table(prev=repliseqTimeRegions_df$repliseqTime_prevtype, type=repliseqTimeRegions_df$repliseqTime_type)
+
   repliseqTime_ranges = GenomicRanges::makeGRangesFromDataFrame(repliseqTime_df %>% dplyr::mutate(seqnames=repliseqTime_chrom, start=repliseqTime_start, end=repliseqTime_end), keep.extra.columns=T)
 
-  repliseqTime2repliseq = IRanges::countOverlaps(macs_ranges, repliseqTime_ranges)
 
-  table(repliseqTime_df$repliseqTime_avg<=4)/nrow(repliseqTime_df)
+  table(repliseqTime_df$repliseqTime_type)
+
+
+  #
+  # Join TLX and repliseq
+  #
+
+  repliseqTime2breaks = as.data.frame(IRanges::mergeByOverlaps(repliseqTime_ranges, tlx_ranges))
+repliseqTime2breaks$repliseqTime_ty
+
+  #
+  # calculate treatment/control fraction for each pair
+  #
+  repliseqTime2breaks_sum = repliseqTime2breaks %>%
+    dplyr::group_by(repliseqTime_chrom, repliseqTime_start, repliseqTime_end, repliseqTime_avg, tlx_group, tlx_group_i) %>%
+    dplyr::summarize(
+      n_control=sum(!is.na(tlx_control) & tlx_control),
+      n_sample=sum(!is.na(tlx_control) & !tlx_control),
+      frac=n_sample/n_control) %>%
+    dplyr::inner_join(libsize_df, by=c("tlx_group", "tlx_group_i")) %>%
+    dplyr::mutate(frac_norm=frac*(control_size/sample_size)) %>%
+    dplyr::mutate(frac_lognorm=log2(ifelse(frac_norm==0, min(frac_norm[is.finite(frac_norm)]), frac_norm))) %>%
+    dplyr::group_by(repliseqTime_chrom, repliseqTime_start, repliseqTime_end, repliseqTime_avg, tlx_group) %>%
+    dplyr::summarize(tlx_group_i=1, frac_lognorm=mean(frac_lognorm)) %>%
+    dplyr::ungroup() %>%
+    dplyr::arrange(tlx_group, tlx_group_i, repliseqTime_chrom, repliseqTime_start, repliseqTime_end) %>%
+    dplyr::group_by(repliseqTime_chrom, tlx_group)
+
+  table(repliseqTime2breaks_sum$repliseqTime_chrom)
+table(repliseqTime2breaks_sum$tlx_c)
+
+  repliseqTime2breaks_sum_ranges = GenomicRanges::makeGRangesFromDataFrame(repliseqTime2breaks_sum %>% dplyr::mutate(seqnames=repliseqTime_chrom, start=repliseqTime_start, end=repliseqTime_end), keep.extra.columns=T)
+
+  repliseqTime2breaks_sum %>%
+    dplyr::group_by(repliseqTime_chrom, repliseqTime_start)
+
+
+  #
+  # Calculate MACS2
+  #
+  macs_df = tlx_macs2(tlx_df %>% dplyr::filter(tlx_group=="APH"), effective_size=1.87e9, extsize=1e4, maxgap=4e4, exttype="along", qvalue=0.05, pileup=5, slocal=1e4, llocal=1e7, exclude_bait_region=T, exclude_repeats=T) %>%
+    dplyr::mutate(macs_length=as.numeric(macs_length))
+  macs_ranges = GenomicRanges::makeGRangesFromDataFrame(macs_df %>% dplyr::mutate(seqnames=macs_chrom, start=macs_start-1e5, end=macs_end+1e5), keep.extra.columns=T)
+
+
+  # Create random regions
+  random_lengths = macs_df %>% dplyr::select(macs_chrom, macs_length)
+  random_df = random_lengths %>%
+    dplyr::inner_join(as.data.frame(genome_info) %>% tibble::rownames_to_column("macs_chrom"), by=c("macs_chrom")) %>%
+    dplyr::group_by(macs_chrom) %>%
+    dplyr::do((function(z){
+      zz<<-z
+      n = 5
+      z.start = sample(z$seqlengths[1], nrow(z)*n)
+
+      data.frame(macs_chrom=z$macs_chrom[1], seqlengths=z$seqlengths[1], start=z.start, macs_length=rep(z$macs_length, each=n)) %>%
+        dplyr::mutate(macs_start=ifelse(start+macs_length>=seqlengths, start-macs_length, start), macs_end=start+macs_length, macs_group="Random positions") %>%
+        dplyr::mutate(macs_cluster=paste0(macs_chrom, "_", 1:n()))
+    })(.)) %>%
+    dplyr::ungroup()
+
+  hits_df = dplyr::bind_rows(random_df, macs_df)
+  hits_ranges = GenomicRanges::makeGRangesFromDataFrame(hits_df %>% dplyr::select(-seqlengths) %>% dplyr::mutate(seqnames=macs_chrom, start=macs_start-1e5, end=macs_end+1e5), keep.extra.columns=T)
+
+  x = as.data.frame(IRanges::mergeByOverlaps(hits_ranges, repliseqTime2breaks_sum_ranges)) %>%
+    dplyr::filter(is.finite(frac_norm)) %>%
+    dplyr::mutate(macs_name=paste0(macs_group, " ", macs_chrom, ":", macs_start, "-", macs_end))
+  ggplot(x) +
+    geom_line(aes(x=repliseqTime_start, y=frac_lognorm, color=tlx_group, group=paste(tlx_group, tlx_group_i))) +
+    geom_line(aes(x=repliseqTime_start, y=repliseqTime_avg)) +
+    coord_cartesian(ylim=c(-20,16)) +
+    facet_wrap(~macs_name, scales="free_x")
+  ggplot(x) +
+    geom_boxplot(aes(x=tlx_group, y=repliseqTime_avg, fill=macs_group))
+  x_sum = x %>%
+    dplyr::group_by(macs_group, tlx_group, macs_name) %>%
+    dplyr::summarize(frac_lognorm)
+
+
+  x = repliseqTime2breaks_sum %>%
+    dplyr::filter(repliseqTime_chrom=="chr6" & dplyr::between(repliseqTime_start, 68e6, 75e6)) %>%
+    dplyr::filter(is.finite(frac_norm))
+  ggplot(x) +
+    geom_line(aes(x=repliseqTime_start, y=repliseqTime_avg)) +
+    geom_line(aes(x=repliseqTime_start, y=log2(frac_norm), color=tlx_group, group=paste(tlx_group, tlx_group_i))) +
+    facet_wrap(~tlx_group_i)
+
+
+
+
+
+  dim(repliseqTime2breaks)
+  repliseqTime_df$breaks_count = IRanges::countOverlaps(repliseqTime_ranges, tlx_ranges)
+  repliseqTime_df$repliseqTime_cut = cut(repliseqTime_df$repliseqTime_avg, seq(0, 16, 2))
+
+  repliseqTime_df %>%
+    dplyr::filter(breaks_count>0) %>%
+    dplyr::group_by(repliseqTime_cut) %>%
+    dplyr::summarize(x=mean(breaks_count), n=n())
+
+  ggplot(repliseqTime_df %>% dplyr::filter(breaks_count>0)) +
+    geom_violin(aes(x=repliseqTime_cut, y=log2(breaks_count)))
+
+
+  data_ranges = GenomicRanges::makeGRangesFromDataFrame(macs_df %>% dplyr::mutate(seqnames=macs_chrom, start=macs_start, end=macs_end), keep.extra.columns=T)
+  data$hits = IRanges::countOverlaps(data_ranges, repliseqTime_ranges)
+
+
+
+
+
+  data = dplyr::bind_rows(macs_df, random_df) %>% dplyr::select(macs_group, macs_chrom, macs_start, macs_end)
+  data_ranges = GenomicRanges::makeGRangesFromDataFrame(data %>% dplyr::mutate(seqnames=macs_chrom, start=macs_start, end=macs_end), keep.extra.columns=T)
+  data$hits = IRanges::countOverlaps(data_ranges, repliseqTime_ranges)
+
+
+
 
   ggplot(repliseqTime_df$repliseqTime_celltype %>% dplyr::filter(repliseqTime_chrom=="chr6" & celltype=="npc")) +
     geom_line(aes())
@@ -170,6 +365,8 @@ main = function() {
   x = repliseqTime_df %>% dplyr::filter(repliseqTime_chrom=="chr6" & dplyr::between(repliseqTime_start, 68e6, 75e6))
   ggplot(x) +
     geom_line(aes(x=repliseqTime_start, y=repliseqTime_avg))
+
+
 
 
   # Calculate IZ
