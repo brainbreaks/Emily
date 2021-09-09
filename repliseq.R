@@ -137,19 +137,6 @@ main = function() {
              GenomeInfoDb::Seqinfo(seqnames, seqlengths, isCircular=rep(F, length(seqnames)), genome=rep("mm9", length(seqnames))))
   genome_info_mm9 = genome_info_mm9[paste0("chr", c(1:19, "X", "Y"))]
 
-
-  samples_df = readr::read_tsv("data/jiasheng/tlx_samples.tsv")
-  samples_df = data.frame(path=list.files("data/jiasheng/", pattern="*.tlx", full.names=T)) %>%
-    dplyr::mutate(group="APH", sample=path, group_i=1:n(), control=F)
-  tlx_df = tlx_read_many(samples_df)
-  tlx_df = tlx_remove_rand_chromosomes(tlx_df)
-  tlx_df = tlx_mark_bait_junctions(tlx_df, 1.5e6)
-  tlx_df = tlx_mark_repeats(tlx_df, repeatmasker_df)
-  tlx_df = tlx_df %>%
-    dplyr::filter(!tlx_is_bait_junction) %>%
-    dplyr::ungroup()
-  tlx_write_wig(tlx_df, file="all.wig", extsize=10000, exttype="along")
-
   #
   # Read TLX
   #
@@ -170,40 +157,60 @@ main = function() {
     dplyr::group_by(tlx_group, tlx_group_i) %>%
     dplyr::summarize(sample_size=sum(!tlx_control), control_size=sum(tlx_control))
 
-
   #
   # Load repliseq
   #
   repliseq_df = readr::read_tsv("data/zhao_bmc_repliseq_2020/preprocessed/repliseq.tsv") %>% dplyr::filter(repliseq_celltype=="npc")
   repliseqTime_df = readr::read_tsv("data/zhao_bmc_repliseq_2020/preprocessed/repliseqTime.tsv") %>% dplyr::filter(repliseqTime_celltype=="npc") %>%
-    dplyr::mutate(repliseqTime_id=1:n())
+    dplyr::mutate(repliseqTime_id=1:n()) %>%
+    dplyr::group_by(repliseqTime_celltype, repliseqTime_chrom) %>%
+    dplyr::mutate(repliseqTime_smooth=smoother::smth.gaussian(repliseqTime_avg, window=50))
 
-    # Calculate IZ
+  # Calculate IZ
   starts = unique(repliseqTime_df$repliseqTime_start)
   repliseqIZ_df = repliseqTime_df %>%
     dplyr::rename(iz_chrom="repliseqTime_chrom", iz_celltype="repliseqTime_celltype") %>%
     dplyr::group_by(iz_chrom, iz_celltype) %>%
     dplyr::do((function(z){
       zz<<-z
-      data.frame(iz_start=which(ggpmisc:::find_peaks(17-z$repliseqTime_avg, ignore_threshold = 1/16, span=9, strict=F))) %>%
-      dplyr::mutate(iz_start=z$repliseqTime_start[iz_start])
+      z.valleys = which(ggpmisc:::find_peaks(17-z$repliseqTime_smooth, ignore_threshold=4/16, span=9, strict=F))
+      z.peaks = which(ggpmisc:::find_peaks(z$repliseqTime_smooth, ignore_threshold=4/16, span=9, strict=F))
+      data.frame(iz_start=c(z.peaks, z.valleys), iz_type=rep(c("peak", "valley"), c(length(z.peaks), length(z.valleys)))) %>%
+        dplyr::mutate(iz_time=z$repliseqTime_smooth[iz_start], iz_start=z$repliseqTime_start[iz_start])
     })(.)) %>%
-    dplyr::arrange(iz_start) %>%
-    dplyr::group_by(iz_chrom) %>%
-    dplyr::mutate(iz_cluster=dbscan::dbscan(as.matrix(iz_start), eps=50000*5, minPts=1)$cluster) %>%
-    dplyr::group_by(iz_chrom, iz_cluster) %>%
-    dplyr::mutate(iz_start=starts[which.min(abs(starts-mean(iz_start)))]) %>%
-    dplyr::inner_join(repliseqTime_df %>% dplyr::select(repliseqTime_chrom, repliseqTime_start, repliseqTime_celltype, repliseqTime_avg), by=c("iz_chrom"="repliseqTime_chrom", "iz_start"="repliseqTime_start", "iz_celltype"="repliseqTime_celltype")) %>%
-    dplyr::distinct(iz_chrom, iz_start, iz_celltype, .keep_all=T)
+    dplyr::arrange(iz_celltype, iz_chrom, iz_start) %>%
+    dplyr::group_by(iz_chrom, iz_celltype) %>%
+    dplyr::mutate(iz_type_group=rep(seq_along(rle(iz_type)$values), rle(iz_type)$lengths)) %>%
+    dplyr::ungroup() %>%
+    dplyr::group_by(iz_celltype, iz_chrom, iz_type_group) %>%
+    dplyr::do((function(z){
+      if(nrow(z)==1) return(z)
+      zz<<-z
 
-  x = repliseqTime_df %>% dplyr::filter(repliseqTime_chrom=="chr6" & dplyr::between(repliseqTime_start, 66e6, 78e6))
-  y = repliseqIZ_df %>% dplyr::filter(iz_chrom=="chr6" & dplyr::between(iz_start, 66e6, 78e6))
+      repliseqTime_df %>%
+        dplyr::filter(repliseqTime_celltype==z$iz_celltype[1] & repliseqTime_chrom==z$iz_chrom[1] & dplyr::between(repliseqTime_start, min(z$iz_start), max(z$iz_start))) %>%
+        dplyr::arrange(repliseqTime_smooth) %>%
+        dplyr::slice(1) %>%
+        dplyr::mutate(iz_type=z$iz_type[1], iz_type_group=z$iz_type_group[1]) %>%
+        dplyr::select(iz_chrom=repliseqTime_chrom, iz_celltype=repliseqTime_celltype, iz_start=repliseqTime_start, iz_type, iz_time=repliseqTime_smooth, iz_type_group)
+    })(.)) %>%
+    dplyr::ungroup()
+
+    # dplyr::arrange(iz_start) %>%
+    # dplyr::group_by(iz_chrom, iz_type) %>%
+    # dplyr::mutate(iz_cluster=dbscan::dbscan(as.matrix(iz_start), eps=50000, minPts=1)$cluster) %>%
+    # dplyr::group_by(iz_chrom, iz_type, iz_cluster) %>%
+    # dplyr::mutate(iz_dist=ifelse(iz_type=="peak", 17-iz_time, iz_time), iz_start=iz_start[which.min(iz_dist)]) %>%
+    # # dplyr::mutate(iz_start=starts[which.min(abs(starts-mean(iz_start)))]) %>%
+    # dplyr::ungroup() %>%
+    # dplyr::distinct(iz_chrom, iz_start, iz_type, iz_celltype, .keep_all=T)
+
+  x = repliseqTime_df %>% dplyr::filter(repliseqTime_chrom=="chr6" & dplyr::between(repliseqTime_start, 20e6, 120e6))
+  y = repliseqIZ_df %>% dplyr::filter(iz_chrom=="chr6" & dplyr::between(iz_start, 20e6, 120e6)) %>% data.frame()
   ggplot(x) +
     geom_line(aes(x=repliseqTime_start, y=repliseqTime_avg)) +
-    geom_vline(aes(xintercept=iz_start), data=y)
-
-  ggplot(repliseqTime_df)
-  repliseqIZ_df
+    geom_line(aes(x=repliseqTime_start, y=repliseqTime_smooth, color="smooth")) +
+    geom_vline(aes(xintercept=iz_start, color=iz_type), data=y)
 
 
   repliseqTimeRegions_df = repliseqTime_df %>%
