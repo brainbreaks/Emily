@@ -1,4 +1,4 @@
-setwd("/mnt/e/Workspace/Emily")
+# setwd("/mnt/e/Workspace/Emily")
 # library(randomForest)
 library(dplyr)
 library(reshape2)
@@ -14,6 +14,7 @@ library(ggpmisc)
 library(rtracklayer)
 library(ggbeeswarm)
 library(Rtsne)
+library(pracma)
 devtools::load_all('breaktools')
 
 liftOverRanges = function(ranges, chain) {
@@ -143,29 +144,40 @@ main = function() {
   repeatmasker_df = repeatmasker_read("data/mm10/annotation/ucsc_repeatmasker.tsv")
   samples_df = readr::read_tsv("data/tlx_samples.tsv")
   tlx_df = tlx_read_many(samples_df)
+
+
   baits_df = tlx_identify_baits(tlx_df, breaksite_size=19)
+  libsize_df = tlx_df %>%
+    dplyr::group_by(tlx_group, tlx_group_i) %>%
+    dplyr::summarize(sample_size=sum(!tlx_control), control_size=sum(tlx_control))
+
+
   tlx_df = tlx_remove_rand_chromosomes(tlx_df)
   tlx_df = tlx_mark_bait_chromosome(tlx_df)
   tlx_df = tlx_mark_bait_junctions(tlx_df, 1.5e6)
   tlx_df = tlx_mark_repeats(tlx_df, repeatmasker_df)
   tlx_df = tlx_df %>%
-    dplyr::filter(tlx_is_bait_chromosome & !tlx_is_bait_junction) %>%
+    dplyr::filter(!tlx_is_bait_junction) %>%
     dplyr::select(-Seq) %>%
     dplyr::mutate(tlx_id=1:n()) %>%
     dplyr::ungroup()
   tlx_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_df %>% dplyr::mutate(seqnames=Rname, start=Junction, end=Junction), keep.extra.columns=T, ignore.strand=T)
-  libsize_df = tlx_df %>%
-    dplyr::group_by(tlx_group, tlx_group_i) %>%
-    dplyr::summarize(sample_size=sum(!tlx_control), control_size=sum(tlx_control))
 
   #
   # Load repliseq
   #
   repliseq_df = readr::read_tsv("data/zhao_bmc_repliseq_2020/preprocessed/repliseq.tsv") %>% dplyr::filter(repliseq_celltype=="npc")
+
+  repliseqAUC_df = repliseq_df %>%
+    dplyr::group_by(repliseq_chrom, repliseq_start, repliseq_end) %>%
+    dplyr::summarize(repliseqTime_auc=pracma::trapz(repliseq_fraction,repliseq_value/max(repliseq_value)))
   repliseqTime_df = readr::read_tsv("data/zhao_bmc_repliseq_2020/preprocessed/repliseqTime.tsv") %>% dplyr::filter(repliseqTime_celltype=="npc") %>%
     dplyr::mutate(repliseqTime_id=1:n()) %>%
     dplyr::group_by(repliseqTime_celltype, repliseqTime_chrom) %>%
     dplyr::mutate(repliseqTime_smooth=smoother::smth.gaussian(repliseqTime_avg, window=50))
+  repliseqTime_df = repliseqTime_df %>%
+    dplyr::inner_join(repliseqAUC_df, by=c("repliseqTime_chrom"="repliseq_chrom", "repliseqTime_start"="repliseq_start", "repliseqTime_end"="repliseq_end"))
+  repliseqTime_ranges = GenomicRanges::makeGRangesFromDataFrame(repliseqTime_df %>% dplyr::mutate(seqnames=repliseqTime_chrom, start=repliseqTime_end, end=repliseqTime_end), keep.extra.columns=T)
 
   #
   # Calculate IZ
@@ -199,26 +211,90 @@ main = function() {
     dplyr::ungroup() %>%
     dplyr::mutate(iz_id=1:n())
 
+  breaks_df = readr::read_tsv("data/breaks_islands.tsv") %>%
+    dplyr::select(breaks_chrom=seqnames, breaks_start=start, breaks_end=end) %>%
+    dplyr::mutate(breaks_group="Breaksite")
+
+  # Create random regions
+  random_breaks_df = breaks_df %>%
+    dplyr::inner_join(as.data.frame(genome_info) %>% tibble::rownames_to_column("breaks_chrom"), by="breaks_chrom") %>%
+    dplyr::group_by(breaks_chrom, breaks_start, breaks_end) %>%
+    dplyr::do((function(z){
+      zz<<-z
+      n = 100
+      z.start = sample(z$seqlengths[1], nrow(z)*n)
+
+      z.length = z$breaks_end-z$breaks_start
+      d1 = repliseqIZ_df %>%
+        dplyr::sample_n(n()) %>%
+        dplyr::group_by(iz_type) %>%
+        dplyr::slice(1) %>%
+        dplyr::ungroup() %>%
+        dplyr::mutate(breaks_chrom=iz_chrom, breaks_start=iz_start-z.length/2, breaks_end=iz_start+z.length/2, breaks_group=paste("Random", iz_type)) %>%
+        dplyr::select(breaks_chrom, breaks_start, breaks_end, breaks_group)
+
+
+      d2 = data.frame(breaks_chrom=z$breaks_chrom[1], seqlengths=z$seqlengths[1], breaks_start=z.start, breaks_length=rep(z$breaks_end-z$breaks_start, each=n)) %>%
+        dplyr::mutate(breaks_start=ifelse(breaks_start+breaks_length>=seqlengths, breaks_start-breaks_length, breaks_start), breaks_end=breaks_start+breaks_length, breaks_group="Random positions") %>%
+        dplyr::select(breaks_chrom, breaks_start, breaks_end, breaks_group)
+
+      rbind(d1, d2)
+    })(.)) %>%
+    dplyr::ungroup()
+
+  breaks_all_df = rbind(breaks_df, random_breaks_df) %>%
+    tidyr::crossing(data.frame(breaks_range=c(1e5, 2e5, 5e5)))
+  breaks_ranges = GenomicRanges::makeGRangesFromDataFrame(breaks_all_df %>% dplyr::mutate(seqnames=breaks_chrom, start=breaks_start-breaks_range, end=breaks_end+breaks_range), keep.extra.columns=T)
+  breaks2repliseqTime_df = as.data.frame(IRanges::mergeByOverlaps(breaks_ranges, repliseqTime_ranges)) %>%
+    dplyr::group_by(breaks_group, breaks_range, breaks_chrom, breaks_start, breaks_end) %>%
+    dplyr::summarize(repliseqTime_auc=max(repliseqTime_auc)/(breaks_end-breaks_start))
+
+  ggplot(breaks2repliseqTime_df) +
+    geom_boxplot(aes(y=repliseqTime_auc, x=as.factor(breaks_range/1e3), fill=breaks_group)) +
+    theme_gray(base_size=20) +
+    labs(x="Size normalized down(up)stream region around breaksite (Kbp)", y="AUC", fill="Source")
+
+
   #
   # Plot peaks and valles
   #
-  x = repliseqTime_df %>% dplyr::filter(repliseqTime_chrom=="chr6" & dplyr::between(repliseqTime_start, 20e6, 120e6))
-  y = repliseqIZ_df %>% dplyr::filter(iz_chrom=="chr6" & dplyr::between(iz_start, 20e6, 120e6)) %>% data.frame()
-  tlxcov_df = tlx_coverage(tlx_df, group="sample", extsize=5e5, exttype="symmetrical") %>%
-    dplyr::mutate(tlx_sample=as.factor(tlx_sample))
+# 1           chr1     128914734   128924733
+# 2           chr2      98652381    98677237
+# 3           chr4     141549783   141570038
+# 4           chr6      70860951    70870950
+# 5           chr6      70892557    70947374
+# 6           chr6      70950836    71008225
+# 7           chr6      71014838    71029382
+# 8           chr9       3002347     3036749
+# 9           chr9      35305232    35315434
+# 10         chr14      19406383    19429377
+# 11          chrX     169969169   169979168
 
-  dim(tlxcov_df)
-  z = tlxcov_df %>% dplyr::filter(tlxcov_chrom=="chr6" & dplyr::between(tlxcov_start, 20e6, 120e6)) %>% data.frame()
+  chr = "chrX"
+  lb = 168e6
+  ub = 21e6
+  tlxcov_df = tlx_coverage(tlx_df, group="group", extsize=5e5, exttype="symmetrical") %>%
+    dplyr::mutate(tlx_separate=as.factor(paste0(tlx_group, " / ", ifelse(tlx_control, "ctrl", "tmnt"))))
+  # v = nucleosomes_df %>% dplyr::filter(seqnames==chr & (dplyr::between(start, lb, ub) | dplyr::between(end, lb, ub)))
+  w = repliseq_df %>% dplyr::filter(repliseq_chrom==chr & dplyr::between(repliseq_start, lb, ub))
+  x = repliseqTime_df %>% dplyr::filter(repliseqTime_chrom==chr & dplyr::between(repliseqTime_start, lb, ub))
+  y = repliseqIZ_df %>% dplyr::filter(iz_chrom==chr & dplyr::between(iz_start, lb, ub)) %>% data.frame()
+  z = tlxcov_df %>% dplyr::filter(tlxcov_chrom==chr & dplyr::between(tlxcov_start, lb, ub)) %>% data.frame()
+
   ggplot(x) +
-    geom_line(aes(x=repliseqTime_start, y=repliseqTime_avg)) +
-    geom_line(aes(x=repliseqTime_start, y=repliseqTime_smooth, color="smooth")) +
-    geom_step(aes(x=tlxcov_start, y=-50+as.numeric(tlx_sample)+tlxcov_pileup/10, color=tlx_sample), data=z) +
-    geom_vline(aes(xintercept=iz_start, color=iz_type), data=y) +
-    coord_cartesian(ylim=c(-50, 16))
-
-
-  tlxcov2repliseq_df
-
+    geom_tile(aes(x=repliseq_start/2+repliseq_end/2, y=repliseq_fraction, fill=repliseq_value), data=w) +
+    geom_line(aes(x=repliseqTime_start, y=repliseqTime_avg), color="#FF0000") +
+    geom_line(aes(x=repliseqTime_start, y=repliseqTime_smooth), color="#FF0000") +
+    geom_line(aes(x=repliseqTime_start, y=repliseqTime_auc), color="#FFCC00") +
+    geom_step(aes(x=tlxcov_start, y=-15+as.numeric(tlx_separate)+tlxcov_pileup/5, color=tlx_separate), data=z) +
+    # geom_vline(aes(xintercept=iz_start, color=iz_type), data=y) +
+    ggtitle(stringr::str_glue("{chr}:{format(start, scientific=F)}-{format(end, scientific=F)}", chr=chr, start=lb/1e6, end=ub/1e6)) +
+    coord_cartesian(ylim=c(-15, 16)) +
+    labs(x="") +
+    scale_color_manual(values=c("peak"="#CCCCCC", "valley"="#CCCCCC",  "APH / tmnt"="#1F78B4", "APH / ctrl"="#A6CEE3", "HU / tmnt"="#33A02C", "HU / ctrl"="#B2DF8A")) +
+    scale_fill_gradientn(colours=c("#666666", "#CCCCCC", "#FFFFFF", "#00FFFF", "#000066"), values=c(0, 0.1, 0.3, 0.5, 1)) +
+    facet_grid(tlx_group~.) +
+    theme_gray(base_size = 21)
 
   #
   # Correlate breaks density with peaks and surroundings
