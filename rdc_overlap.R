@@ -21,6 +21,8 @@ main = function() {
   llocal = 1e7
   bait_region=6e6
 
+  pdf("reports/meeting_2021-10-06.pdf", width=11.69, height=8.27, paper="a4r")
+
   #
   # Offtargets
   #
@@ -31,6 +33,10 @@ main = function() {
   #
   sizes_df = readr::read_tsv("genomes/mm10/annotation/mm10.chrom.sizes", col_names=c("sizes_chrom", "sizes_length")) %>%
     dplyr::mutate(sizes_effective=sizes_length/sum(sizes_length)*effective_size)
+
+  genes_ranges = rtracklayer::import("genomes/mm10/annotation/refGene.bed")
+  genes_ranges = genes_ranges[!grepl("_rev",genes_ranges$name)]
+  values(genes_ranges) = data.frame(gene_name=genes_ranges$name)
 
   #
   # Read RDC
@@ -72,9 +78,11 @@ main = function() {
     dplyr::mutate(library_factor=max(library_size)/library_size)
   ggplot(libsizes_df) +
     geom_bar(aes(x=tlx_group, y=library_size, fill=Treatment, group=paste0(tlx_group_i, tlx_control)), position="dodge", stat="identity") +
-    scale_fill_manual(values=c("APH"="#1F78B4", "DMSO (APH)"="#A6CEE3", "HU"="#E31A1C", "DMSO (HU)"="#FB9A99")) +
+    scale_fill_manual(values=color_scheme) +
     labs(x="", y="Library size", title="Library size comparisons of Hydroxyurea/Aphidicolin treatment and their respective libraries") +
-    theme_grey(base_size=18)
+    theme_grey(base_size=14) +
+    guides(fill=guide_legend(nrow=2, byrow=TRUE)) +
+    theme(legend.position="bottom")
 
 
   #
@@ -92,9 +100,11 @@ main = function() {
 
   ggplot(dist_df) +
     ggridges::geom_density_ridges(aes(x=dist, y=tlx_sample, fill=Treatment), bandwidth=1e4) +
-    scale_fill_manual(values=c("APH"="#1F78B4", "DMSO (APH)"="#A6CEE3", "HU"="#E31A1C", "DMSO (HU)"="#FB9A99")) +
+    scale_fill_manual(values=color_scheme) +
     labs(y="", title="Average distance between individual junctions") +
-    theme_gray(base_size=18)
+    theme_gray(base_size=14) +
+    guides(fill=guide_legend(nrow=2, byrow=TRUE)) +
+    theme(legend.position="bottom")
 
   #
   # 3. Example of breaksites from APH
@@ -105,14 +115,15 @@ main = function() {
   tlxcov_ranges = GenomicRanges::makeGRangesFromDataFrame(tlxcov_df %>% dplyr::mutate(seqnames=tlxcov_chrom, start=tlxcov_start, end=tlxcov_end), keep.extra.columns=T)
   roi_ranges = GenomicRanges::makeGRangesFromDataFrame(roi_df %>% dplyr::mutate(seqnames=roi_chrom, start=roi_start, end=roi_end), keep.extra.columns=T)
   tlxcov_roi_df = as.data.frame(IRanges::mergeByOverlaps(tlxcov_ranges, roi_ranges)) %>%
-    dplyr::mutate(sample_name=paste0(ifelse(tlx_control, "DMSO (", ""), tlx_group, ifelse(tlx_control, ")", ""))) %>%
+    dplyr::mutate(Treatment=paste0(ifelse(tlx_control, "DMSO (", ""), tlx_group, ifelse(tlx_control, ")", ""))) %>%
     dplyr::mutate(tlxcov_pileup_norm=tlxcov_pileup*library_factor)
   ggplot() +
-    geom_step(aes(x=tlxcov_start, y=tlxcov_pileup, group=paste(tlx_group, tlx_group_i, tlx_control), color=sample_name), data=tlxcov_roi_df %>% dplyr::mutate(Normalization="Unnormalized")) +
-    geom_step(aes(x=tlxcov_start, y=tlxcov_pileup_norm, group=paste(tlx_group, tlx_group_i, tlx_control), color=sample_name), data=tlxcov_roi_df %>% dplyr::mutate(Normalization="Library size normalized")) +
+    geom_step(aes(x=tlxcov_start/1e6, y=tlxcov_pileup, group=paste(tlx_group, tlx_group_i, tlx_control), color=Treatment), data=tlxcov_roi_df %>% dplyr::mutate(Normalization="Unnormalized")) +
+    geom_step(aes(x=tlxcov_start/1e6, y=tlxcov_pileup_norm, group=paste(tlx_group, tlx_group_i, tlx_control), color=Treatment), data=tlxcov_roi_df %>% dplyr::mutate(Normalization="Library size normalized")) +
     facet_grid(Normalization~roi_gene, scales="free") +
-    scale_color_manual(values=c("APH"="#1F78B4", "DMSO (APH)"="#A6CEE3", "HU"="#E31A1C", "DMSO (HU)"="#FB9A99")) +
-    theme_grey(base_size=18)
+    labs(title="Examples of known APH clusters", y="Reads", x="Mbp") +
+    scale_color_manual(values=color_scheme) +
+    theme_grey(base_size=14)
 
   #
   # 4. PCA samples
@@ -148,10 +159,10 @@ main = function() {
     dplyr::mutate(group_name=paste0(ifelse(control, "DMSO (", ""), group, ifelse(control, ")", "")))
   pca_res = prcomp(tlx_mat %>% dplyr::select(dplyr::matches("V[0-9]+")), scale.=T)
   ggplot2::autoplot(pca_res, data=tlx_mat, colour="group_name", size=5) +
-    ggrepel::geom_text_repel(aes(label=sample), size=8) +
-    scale_color_manual(values=c("APH"="#1F78B4", "DMSO (APH)"="#A6CEE3", "HU"="#E31A1C", "DMSO (HU)"="#FB9A99")) +
+    ggrepel::geom_text_repel(aes(label=sample), size=6) +
+    scale_color_manual(values=color_scheme) +
     labs(title=paste0("PCA of top 50 most abundant bins (", extsize ,") from each sample"), color="Sample") +
-    theme_grey(base_size=18)
+    theme_grey(base_size=14)
 
   #
   # Export data for IGV
@@ -167,39 +178,62 @@ main = function() {
   # ggplot()
 
   #
-  # 5. Read MACS2 results
+  # 5. Compare breaks for MACS2 hits
   #
-  macs_df = tlx_macs2(tlx_df, grouping="group", effective_size=2*effective_size, extsize=extsize, maxgap=maxgap, exttype=exttype, qvalue=0.01, pileup=threshold_pileup, slocal=slocal, llocal=llocal, exclude_bait_region=T, exclude_repeats=F)
+  macs_df = tlx_macs2(tlx_df, grouping="group", effective_size=effective_size, extsize=extsize, maxgap=maxgap, exttype=exttype, qvalue=0.01, pileup=threshold_pileup, slocal=slocal, llocal=llocal, exclude_bait_region=T, exclude_repeats=F)
   macs_ranges = GenomicRanges::makeGRangesFromDataFrame(macs_df %>% dplyr::mutate(seqnames=macs_chrom, start=macs_start, end=macs_end), ignore.strand=T)
   macs_reduced_df = as.data.frame(GenomicRanges::reduce(macs_ranges)) %>% dplyr::mutate(macs_chrom=seqnames, macs_start=start, macs_end=end) %>% dplyr::select(-width, -strand)
   macs_reduced_ranges = GenomicRanges::makeGRangesFromDataFrame(macs_reduced_df, ignore.strand=T, keep.extra.columns=T)
   writeLines(macs_df %>% dplyr::mutate(pos=paste0(macs_chrom, ":", macs_start, "-", macs_end)) %>% .$pos)
+  # table(macs_df$macs_group)
 
   tlx_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_df %>% dplyr::mutate(seqnames=Rname, start=Rstart, end=Rend), ignore.strand=T, keep.extra.columns=T)
-  tlx_macs_df = as.data.frame(IRanges::mergeByOverlaps(tlx_ranges, macs_reduced_ranges))
-  tlx_macs_df.sum = tlx_macs_df %>%
-    dplyr::inner_join(samples_df, by=c("tlx_sample"="sample")) %>%
-    dplyr::group_by(tlx_sample, group, group_i, control, macs_chrom, macs_start, macs_end) %>%
+  tlx_macs_df = as.data.frame(IRanges::mergeByOverlaps(tlx_ranges, macs_reduced_ranges)) %>% dplyr::select(-dplyr::matches("_ranges\\."))
+  tlx_macs_ranges = GenomicRanges::makeGRangesFromDataFrame(tlx_macs_df %>%  dplyr::mutate(seqnames=macs_chrom, start=macs_start, end=macs_end), keep.extra.columns=T, ignore.strand=T)
+  tlx_named_macs_df = leftJoinByOverlaps(tlx_macs_ranges, genes_ranges) %>%
+    dplyr::distinct(tlx_sample, macs_chrom, macs_start, macs_end, Rname, Junction, .keep_all=T) %>%
+    dplyr::inner_join(samples_df, by=c("tlx_sample"="sample"))
+
+  tlx_macs_df.sum1 = tlx_named_macs_df %>%
+    dplyr::group_by(tlx_sample, macs_chrom, macs_start, macs_end, group, gene_name, control) %>%
     dplyr::summarize(breaks_count=n()) %>%
+    dplyr::ungroup()
+  tlx_macs_df.sum2 = tlx_macs_df.sum1 %>%
+    dplyr::distinct(macs_chrom, macs_start, macs_end, gene_name) %>%
+    tidyr::crossing(tlx_macs_df.sum1 %>% dplyr::distinct(tlx_sample, group, control)) %>%
+    dplyr::mutate(breaks_count=0) %>%
+    dplyr::anti_join(tlx_macs_df.sum1 %>% dplyr::select(-breaks_count))
+  tlx_macs_df.sum = dplyr::bind_rows(tlx_macs_df.sum1, tlx_macs_df.sum2) %>%
+    dplyr::group_by(macs_chrom, macs_start, macs_end) %>%
+    dplyr::filter(any(breaks_count>0)) %>%
+    dplyr::ungroup() %>%
     dplyr::inner_join(libsizes_df %>% dplyr::select(tlx_sample, library_factor), by="tlx_sample") %>%
     dplyr::mutate(breaks_count_norm=breaks_count*library_factor) %>%
     # dplyr::group_by(tlx_sample, group, control, macs_chrom, macs_start, macs_end) %>%
     # dplyr::summarize(breaks_count_norm.sd=sd(breaks_count_norm), breaks_count_norm=mean(breaks_count_norm)) %>%
-    dplyr::mutate(Treatment=paste0(ifelse(control, "DMSO (", ""), group, ifelse(control, ")", "")), macs_pos=paste0(macs_chrom, ":", macs_start, "-", macs_end))
+    dplyr::mutate(Treatment=paste0(ifelse(control, "DMSO (", ""), group, ifelse(control, ")", "")), macs_pos=paste0(macs_chrom, ":", macs_start, "-", macs_end)) %>%
+    dplyr::mutate(Treatment=factor(Treatment)) %>%
+    dplyr::mutate(Facet=paste(gene_name, "|", macs_pos))
+
   ggplot(tlx_macs_df.sum) +
-    geom_point(aes(x=group, y=breaks_count_norm, color=Treatment),size=2.5, position=position_jitterdodge(jitter.width=0), show.legend=F) +
-    scale_fill_manual(values=c("APH"="#1F78B4", "DMSO (APH)"="#A6CEE3", "HU"="#E31A1C", "DMSO (HU)"="#FB9A99")) +
-    labs(x="", y="Library size", title="Library size comparisons of Hydroxyurea/Aphidicolin treatment and their respective libraries") +
-    theme_grey(base_size=18) +
-    facet_wrap(~macs_pos, scales="free")
+    geom_boxplot(aes(x=group, y=breaks_count_norm, fill=Treatment), position=position_dodge2(preserve="single")) +
+    geom_point(aes(x=group, y=breaks_count_norm, fill=Treatment), size=1.8, pch=21, position=position_jitterdodge(jitter.width=0.2), show.legend=F) +
+    scale_color_manual(values=color_scheme, drop=F) +
+    scale_fill_manual(values=color_scheme, drop=F) +
+    labs(x="", y="Normalized junctions count", title="Number of junctions in macs hits comparison") +
+    theme_grey(base_size=14) +
+    facet_wrap(~Facet, scales="free_y") +
+    scale_x_discrete(drop=F) +
+    guides(fill=guide_legend(nrow=2, byrow=TRUE)) +
+    theme(legend.position="bottom", strip.text=element_text(size=7), axis.text = element_text(size=7))
 
 
   #
-  # Overlap with RDC
+  # 6. Overlap with RDC
   #
   venn_chromosomes = c("chr6", "All")
   plot.new()
-  grid::pushViewport(grid::plotViewport(layout=grid::grid.layout(nrow=2, ncol=1)))
+  grid::pushViewport(grid::plotViewport(layout=grid::grid.layout(nrow=1, ncol=2)))
   for(chr in venn_chromosomes) {
     macs_peaks_ranges = GenomicRanges::makeGRangesFromDataFrame(macs_df %>% dplyr::mutate(seqnames=macs_chrom, start=macs_start, end=macs_end), keep.extra.columns=T)
     macs2rdc_df = as.data.frame(IRanges::mergeByOverlaps(macs_peaks_ranges, rdc_pnas_ranges))
@@ -208,14 +242,14 @@ main = function() {
     macs2rdc_df = macs2rdc_df %>% dplyr::mutate(common_name=ifelse(!is.na(rdc_name), rdc_name, macs_name))
     if(chr != "All") macs2rdc_df = macs2rdc_df %>% dplyr::filter(rdc_chrom==chr | macs_chrom==chr)
 
-    venn_size = 6
+    venn_size = 2
     venn_pallete = "Pastel2"
     venn_list = list(
       RDC=macs2rdc_df %>% dplyr::filter(!is.na(rdc_name)) %>% .$common_name,
       HU=macs2rdc_df %>% dplyr::filter(!is.na(macs_name) & macs_group=="HU") %>% .$common_name,
       APH=macs2rdc_df %>% dplyr::filter(!is.na(macs_name) & macs_group=="APH") %>% .$common_name)
 
-    grid::pushViewport(grid::plotViewport(layout.pos.row=which(chr==venn_chromosomes), layout.pos.col=1))
+    grid::pushViewport(grid::plotViewport(layout.pos.col=which(chr==venn_chromosomes), layout.pos.row=1))
     p = VennDiagram::venn.diagram(
       x=venn_list, height=venn_size, width=venn_size,
       margin=0.1,
@@ -224,84 +258,5 @@ main = function() {
     grid::grid.draw(p)
     grid::popViewport()
   }
-
-  "
-
-  #
-  # Cluster breaks clusters into larger regions of clusters
-  #
-  macs_peaks_reduced_df = as.data.frame(GenomicRanges::reduce(GenomicRanges::makeGRangesFromDataFrame(macs_peaks_df %>% dplyr::mutate(macs_start=macs_start-1e5, macs_end=macs_end+1e5)))) %>%
-    dplyr::select(reduced_chrom=seqnames, reduced_start=start, reduced_end=end) %>%
-    dplyr::mutate(reduced_loci=paste0(reduced_chrom, ":", reduced_start, "-", reduced_end))
-  macs_peaks_reduced_ranges = GenomicRanges::makeGRangesFromDataFrame(macs_peaks_reduced_df %>% dplyr::mutate(seqnames=reduced_chrom, start=reduced_start, end=reduced_end), keep.extra.columns=T)
-  macs_peaks_ranges = GenomicRanges::makeGRangesFromDataFrame(macs_peaks_df %>% dplyr::mutate(seqnames=macs_chr, start=macs_start, end=macs_end), keep.extra.columns=T)
-
-  tlxcov_ranges = GenomicRanges::makeGRangesFromDataFrame(tlxcov_df %>% dplyr::mutate(seqnames=tlxcov_chrom, start=tlxcov_start, end=tlxcov_end), keep.extra.columns=T)
-  tlxcov_reduced_df = as.data.frame(IRanges::mergeByOverlaps(tlxcov_ranges, macs_peaks_reduced_ranges)) %>%
-    dplyr::select(-dplyr::matches("macs_peaks_reduced_ranges|tlxcov_ranges")) %>%
-    dplyr::mutate(tlxcov_start=ifelse(tlxcov_start<reduced_start, reduced_start-1, tlxcov_start), tlxcov_end=ifelse(tlxcov_end<reduced_start, reduced_start, tlxcov_end)) %>%
-    dplyr::mutate(tlxcov_start=ifelse(tlxcov_start>reduced_end, reduced_end, tlxcov_start), tlxcov_end=ifelse(tlxcov_end>reduced_end, reduced_end+1, tlxcov_end))
-
-  #
-  # Plot break cluster and pileup
-  #
-  macs_ggplot_df = as.data.frame(IRanges::mergeByOverlaps(macs_peaks_ranges, macs_peaks_reduced_ranges)) %>%
-    dplyr::select(-dplyr::matches("macs_peaks_ranges|macs_peaks_reduced_ranges")) %>%
-    dplyr::mutate(Condition=ifelse(macs_control, "DMSO", "HU"))
-  macs_ggplot_ymax = 50
-  ggplot(macs_ggplot_df) +
-    geom_rect(aes(xmin=macs_start, xmax=macs_end, ymin=macs_ggplot_ymax/10*(macs_control+macs_group_i/2), ymax=macs_ggplot_ymax/10*(macs_control+(macs_group_i+1)/2), fill=Condition), alpha=0.5, color="#222222") +
-    geom_step(aes(x=tlxcov_start, y=tlxcov_pileup, color=Condition, group=paste0(tlx_sample)), data=tlxcov_reduced_df %>% dplyr::mutate(Condition=ifelse(tlx_control, "DMSO", "HU"))) +
-    geom_text(aes(x=macs_end/2+macs_start/2, y=macs_ggplot_ymax/10*(macs_control+macs_group_i/2+1/4), label=macs_pileup)) +
-    facet_wrap(~reduced_loci, scales="free_x") +
-    scale_color_manual(values=c("DMSO"="#E41A1C", "HU"="#377EB8")) +
-    scale_fill_manual(values=c("DMSO"="#E41A1C", "HU"="#377EB8")) +
-    guides(color="none") +
-    coord_cartesian(ylim=c(0, macs_ggplot_ymax))
-
-  rdc2emily_df = as.data.frame(IRanges::mergeByOverlaps(macs_peaks_ranges, rdc_pnas_ranges)) %>%
-    dplyr::select(-dplyr::matches("_ranges\\."))
-
-  venn_size = 6
-  venn_pallete = "Pastel2"
-  venn_list = list(RDC=c(rdc2emily_df$macs_name, rdc_pnas_df$rdc_name), Emily=macs_peaks_df$macs_name)
-
-  plot.new()
-  p = VennDiagram::venn.diagram(
-    x=venn_list, height=venn_size, width=venn_size,
-    margin=0.1,
-    cat.cex=venn_size/1.5, cex=venn_size, main.cex=venn_size,
-    lwd=2, lty='blank', fill=RColorBrewer::brewer.pal(8, venn_pallete)[1:length(venn_list)], cat.fontface="bold", filename=NULL)
-  grid::grid.draw(p)
-
-
-
-  tlxcov_df = tlx_coverage(tlx_df, group="group", extsize=1e6, exttype="symmetrical") %>%
-    dplyr::filter(tlx_group=="HU") %>%
-    dplyr::mutate(tlxcov_pileup_log10=log10(tlxcov_pileup), tlxcov_pileup_log10=ifelse(tlxcov_pileup_log10>=0, tlxcov_pileup_log10, 0))
-  ggplot(tlxcov_df %>% dplyr::filter(tlxcov_chrom=="chr6")) +
-    geom_step(aes(tlxcov_start, tlxcov_pileup, color=tlx_control)) +
-    geom_rect(aes(ymin=-1, ymax=1, xmin=rdc_start, xmax=rdc_end), data=rdc_pnas_df %>% dplyr::filter(rdc_chrom=="chr6") %>% dplyr::arrange(rdc_start))
-
-  tlx_df.f = tlx_df %>%
-    dplyr::filter(tlx_control & Rname=="chr6")
-  table(tlx_df$tlx_group, tlx_df$tlx_control)
-  libsize.f = tlx_df.f %>%
-    dplyr::group_by(tlx_group) %>%
-    dplyr::summarize(libsize=n()) %>%
-    dplyr::ungroup() %>%
-    dplyr::mutate(factor=max(libsize)/libsize)
-
-  tlxcov_df = tlx_coverage(tlx_df.f, group="group", extsize=1.2e6, exttype="symmetrical") %>%
-    dplyr::inner_join(libsize.f, by="tlx_group") %>%
-    dplyr::mutate(tlxcov_pileup=tlxcov_pileup*factor) %>%
-    dplyr::group_by(tlx_group) %>%
-    dplyr::mutate(tlxcov_smooth=smoother::smth.gaussian(tlxcov_pileup, window=20)) %>%
-    dplyr::ungroup()
-  ggplot(tlxcov_df) +
-    # geom_step(aes(tlxcov_start, tlxcov_pileup, color=tlx_group)) +
-    geom_line(aes(tlxcov_start, tlxcov_smooth, color=tlx_group)) +
-    geom_line(aes(x=repliseqTime_start, y=-repliseqTime_avg), data=repliseqTime_df %>% dplyr::filter(repliseqTime_chrom=="chr6")) +
-    geom_rect(aes(ymin=-1, ymax=0, xmin=rdc_start, xmax=rdc_end), data=rdc_pnas_df %>% dplyr::filter(rdc_chrom=="chr6") %>% dplyr::arrange(rdc_start))
-
+  dev.off()
 }
