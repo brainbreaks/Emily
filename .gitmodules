@@ -1,0 +1,3 @@
+[submodule "breaktools"]
+	path = breaktools
+	url = git@github.com:brainbreaks/breaktools.git
