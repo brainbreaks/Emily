@@ -1,0 +1,13 @@
+sample	path	group	group_i	control
+VI047	data/tlx/APH/VI047_B400_011_result.tlx	APH	1	T
+VI048	data/tlx/APH/VI048_B400_011_result.tlx	APH	1	F
+VI053	data/tlx/APH/VI053_B400_012_result.tlx	APH	2	T
+VI054	data/tlx/APH/VI054_B400_012_result.tlx	APH	2	F
+LC0024	data/tlx/APH/LC0024_B400_005_result.tlx	APH	3	T
+VI021	data/tlx/APH/VI021_B400_006_result.tlx	APH	3	F
+VI020	data/tlx/APH/VI020_B400_006_result.tlx	APH	4	T
+VI028	data/tlx/APH/VI028_B400_006_result.tlx	APH	4	F
+JF027	data/tlx/HU/JF027_B400_013_result.tlx	HU	1	T
+JF025	data/tlx/HU/JF025_B400_013_result.tlx	HU	1	F
+JF028	data/tlx/HU/JF028_B400_013_result.tlx	HU	2	T
+JF026	data/tlx/HU/JF026_B400_013_result.tlx	HU	2	F

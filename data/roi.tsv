@@ -1,0 +1,9 @@
+roi_gene	roi_chrom	roi_start	roi_end	roi_peak	roi_peak.1
+Ccser1	chr6	61180325	62382863	75	longest transcript
+Grid2	chr6	63255903	64704322	55	longest transcript
+Ctnna2	chr6	76881637	77979703	220	longest transcript
+Magi1	chr6	93675453	94283920	90	longest transcript
+Sox5	chr6	143828425	144781989	36	longest transcript
+Cacna1c	chr6	118587240	119197493	15	longest transcript
+Foxp1	chr6	98923261	99031296	100	A rather short transcript close to the gene end
+Tpk1	chr6	43344999	43666486	10	longest transcript
