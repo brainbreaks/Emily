@@ -24,7 +24,7 @@ main = function() {
   bait_region=6e6
   color_scheme = c("APH"="#1F78B4", "DMSO (APH)"="#A6CEE3", "HU"="#E31A1C", "DMSO (HU)"="#FB9A99")
 
-  #
+  #zz
   # Offtargets
   #
   # bowtie2 -k 30 -N 1 -x mm10/mm10 --end-to-end --very-sensitive -c acgagcatttccaaccc
@@ -57,8 +57,10 @@ main = function() {
   rdc_pnas_ranges = unlist(rtracklayer::liftOver(rdc_pnas_ranges, chain_mm9_mm10))
   rdc_pnas_df = as.data.frame(rdc_pnas_ranges) %>%
     dplyr::distinct(rdc_chrom, rdc_start, rdc_end, .keep_all=T) %>%
+    dplyr::mutate(rdc_chrom=seqnames, rdc_start=start, rdc_end=end) %>%
     dplyr::select(dplyr::matches("rdc_")) %>%
     dplyr::mutate(rdc_name=paste(rdc_chrom, rdc_start, rdc_end))
+  readr::write_tsv(rdc_pnas_df %>% dplyr::select(-rdc_name), file="data/rdc_pnas_mm10.tsv", quote_escape=F, na="")
   rdc_pnas_ranges = GenomicRanges::makeGRangesFromDataFrame(rdc_pnas_df %>% dplyr::mutate(seqnames=rdc_chrom, start=rdc_start, end=rdc_end), keep.extra.columns=T)
 
   #
@@ -74,24 +76,25 @@ main = function() {
   # tlx_df = tlx_df %>% dplyr::filter(!tlx_is_bait_junction)
   tlx_df = tlx_df %>%
     dplyr::mutate(Junction1=Junction+200) %>%
-    dplyr::select(-Seq) %>%
     dplyr::mutate(tlx_id=1:n()) %>%
-    dplyr::ungroup()
+    dplyr::ungroup() %>%
+    dplyr::mutate(tlx_sample_num=match(tlx_df$tlx_sample, c("VI021", "VI028", "VI048", "VI054", "VI020", "VI047", "VI053", "LC0024", "JF025", "JF026", "JF027", "JF028")))
 
-
-  pdf("reports/meeting_2021-10-06_3.pdf", width=11.69, height=8.27, paper="a4r")
-  #
-  # 1. Compare library sizes
-  #
   libsizes_df = tlx_df %>%
-    dplyr::group_by(tlx_group, tlx_sample, tlx_group_i, tlx_control) %>%
+    dplyr::group_by(tlx_group, tlx_sample, tlx_sample_num, tlx_group_i, tlx_control) %>%
     dplyr::summarize(library_size=n()) %>%
     dplyr::mutate(Treatment=paste0(ifelse(tlx_control, "DMSO (", ""), tlx_group, ifelse(tlx_control, ")", ""))) %>%
     dplyr::ungroup() %>%
     dplyr::mutate(library_factor=max(library_size)/library_size)
+
+
+  pdf("reports/meeting_2021-10-14.pdf", width=11.69, height=8.27, paper="a4r")
+  #
+  # 1. Compare library sizes
+  #
   ggplot(libsizes_df) +
-    geom_bar(aes(x=tlx_group, y=library_size, fill=Treatment, group=paste0(tlx_group_i, tlx_control)), position="dodge", stat="identity") +
-    geom_text(aes(x=tlx_group, y=library_size, group=paste0(tlx_group_i, tlx_control, Treatment), label=tlx_sample), vjust=-1, position=position_dodge(width=0.9), size=4) +
+    geom_bar(aes(x=tlx_group, y=library_size, fill=Treatment, group=paste0(tlx_control, tlx_sample_num, tlx_group_i)), position="dodge", color="#EEEEEE", stat="identity") +
+    geom_text(aes(x=tlx_group, y=library_size, group=paste0(tlx_control, tlx_sample_num, tlx_group_i, Treatment), label=tlx_sample), vjust=-1, position=position_dodge(width=0.9), size=4) +
     scale_fill_manual(values=color_scheme) +
     scale_y_continuous(labels=scales::label_number(accuracy=1, scale=1e-3, suffix="K")) +
     labs(x="", y="Library size", title="Library size comparisons of Hydroxyurea/Aphidicolin treatment and their respective libraries") +
@@ -99,19 +102,18 @@ main = function() {
     guides(fill=guide_legend(nrow=2, byrow=TRUE)) +
     theme(legend.position="bottom")
 
-
   #
   # 2. Compare average distance between junctions
   #
   dist_df = tlx_df %>%
     dplyr::filter(!tlx_is_bait_junction & tlx_is_bait_chromosome) %>%
-    dplyr::group_by(tlx_sample, tlx_group, tlx_group_i, tlx_control, Rname) %>%
+    dplyr::group_by(tlx_sample, tlx_sample_num, tlx_group, tlx_group_i, tlx_control, Rname) %>%
     dplyr::summarize(dist=diff(sort(Junction))) %>%
     dplyr::ungroup() %>%
     dplyr::inner_join(libsizes_df %>% dplyr::select(tlx_sample, library_factor), by="tlx_sample") %>%
     dplyr::mutate(dist=dist/library_factor) %>%
     dplyr::mutate(Treatment=paste0(ifelse(tlx_control, "DMSO (", ""), tlx_group, ifelse(tlx_control, ")", ""))) %>%
-    dplyr::arrange(dplyr::desc(tlx_group), tlx_group_i, dplyr::desc(tlx_control)) %>%
+    dplyr::arrange(dplyr::desc(tlx_sample_num)) %>%
     dplyr::mutate(tlx_sample=factor(tlx_sample, unique(tlx_sample)), dist_log10=log10(dist))
 
   ggplot(dist_df) +
@@ -126,26 +128,40 @@ main = function() {
   #
   # 3. Example of breaksites from APH
   #
-  tlxcov_df = tlx_coverage(tlx_df, group="sample", extsize=extsize, exttype="symmetrical") %>%
-    dplyr::inner_join(libsizes_df %>% dplyr::select(tlx_sample, library_factor), by="tlx_sample")
-  roi_df = readr::read_tsv("data/roi.tsv") %>% dplyr::filter(grepl("Ccser|Ctnna2|Grid2", roi_gene))
-  tlxcov_ranges = GenomicRanges::makeGRangesFromDataFrame(tlxcov_df %>% dplyr::mutate(seqnames=tlxcov_chrom, start=tlxcov_start, end=tlxcov_end), keep.extra.columns=T)
+  # pdf("reports/early_replicating_pileup_2021-10-19.pdf", width=11.69, height=8.27, paper="a4r")
+  pileup = c("Late"=extsize, "Early"=1e6)
+  roi_df = readr::read_tsv("data/roi.tsv") %>%
+    dplyr::filter(grepl("Ccser|Ctnna2|Grid2", roi_gene) | grepl("Early", roi_description)) %>%
+    dplyr::mutate(roi_description=ifelse(grepl("Early", roi_description), "Early", "Late")) %>%
+    dplyr::mutate(roi_start=ifelse(grepl("Early", roi_description), roi_start-1e6, roi_start)) %>%
+    dplyr::mutate(roi_end=ifelse(grepl("Early", roi_description), roi_end+1e6, roi_end))
   roi_ranges = GenomicRanges::makeGRangesFromDataFrame(roi_df %>% dplyr::mutate(seqnames=roi_chrom, start=roi_start, end=roi_end), keep.extra.columns=T)
-  tlxcov_roi_df = as.data.frame(IRanges::mergeByOverlaps(tlxcov_ranges, roi_ranges)) %>%
-    dplyr::mutate(Treatment=paste0(ifelse(tlx_control, "DMSO (", ""), tlx_group, ifelse(tlx_control, ")", ""))) %>%
-    dplyr::mutate(tlxcov_pileup_norm=tlxcov_pileup*library_factor) %>%
-    dplyr::arrange(tlxcov_start) %>%
-    dplyr::group_by(roi_gene) %>%
-    dplyr::filter(1:n()>rle(tlxcov_pileup)$lengths[1]) %>%
-    dplyr::ungroup()
-  ggplot() +
-    geom_step(aes(x=tlxcov_start, y=tlxcov_pileup, group=paste(tlx_group, tlx_group_i, tlx_control), color=Treatment), data=tlxcov_roi_df %>% dplyr::mutate(Normalization="Unnormalized")) +
-    geom_step(aes(x=tlxcov_start, y=tlxcov_pileup_norm, group=paste(tlx_group, tlx_group_i, tlx_control), color=Treatment), data=tlxcov_roi_df %>% dplyr::mutate(Normalization="Sample normalized")) +
-    facet_grid(Normalization~roi_gene, scales="free") +
-    labs(title="Examples of known APH clusters", y="Junctions", x="Position on chromosome 6 (Mbp)") +
-    scale_color_manual(values=color_scheme) +
-    theme_grey(base_size=14) +
-    scale_x_continuous(labels=scales::label_number(accuracy=0.1, scale=1e-6, suffix="Mb"), breaks=scales::breaks_width(0.5e6))
+  for(desc in unique(tlxcov_roi_df$roi_description)) {
+    tlxcov_df = tlx_coverage(tlx_df, group="sample", extsize=pileup[desc], exttype="symmetrical") %>%
+      dplyr::inner_join(libsizes_df %>% dplyr::select(tlx_sample, library_factor), by="tlx_sample")
+    tlxcov_ranges = GenomicRanges::makeGRangesFromDataFrame(tlxcov_df %>% dplyr::mutate(seqnames=tlxcov_chrom, start=tlxcov_start, end=tlxcov_end), keep.extra.columns=T)
+    tlxcov_roi_df = as.data.frame(IRanges::mergeByOverlaps(tlxcov_ranges, roi_ranges)) %>%
+      dplyr::mutate(Treatment=paste0(ifelse(tlx_control, "DMSO (", ""), tlx_group, ifelse(tlx_control, ")", ""))) %>%
+      dplyr::mutate(tlxcov_pileup_norm=tlxcov_pileup*library_factor) %>%
+      dplyr::arrange(tlxcov_start) %>%
+      dplyr::group_by(roi_gene) %>%
+      dplyr::filter(1:n()>rle(tlxcov_pileup)$lengths[1]) %>%
+      dplyr::ungroup()
+
+    tlxcov_roi_fdf = tlxcov_roi_df %>% dplyr::filter(roi_description==desc)
+    p = ggplot() +
+      # geom_step(aes(x=tlxcov_start, y=tlxcov_pileup, group=paste(tlx_group, tlx_group_i, tlx_control), color=Treatment), data=tlxcov_roi_fdf %>% dplyr::mutate(Normalization="Unnormalized")) +
+      # geom_step(aes(x=tlxcov_start, y=tlxcov_pileup_norm, group=paste(tlx_group, tlx_group_i, tlx_control), color=Treatment), data=tlxcov_roi_fdf %>% dplyr::mutate(Normalization="Sample normalized")) +
+      # facet_grid(Normalization~roi_gene, scales="free") +
+      geom_step(aes(x=tlxcov_start, y=tlxcov_pileup_norm, group=paste(tlx_group, tlx_group_i, tlx_control), color=Treatment), data=tlxcov_roi_fdf %>% dplyr::mutate(Chromosome=tlxcov_chrom)) +
+      facet_wrap(Chromosome~roi_gene, scales="free_x") +
+      labs(title="Examples of known APH clusters", y="Junctions", x="Position on chromosome (Mbp)") +
+      scale_color_manual(values=color_scheme) +
+      theme_grey(base_size=14) +
+      scale_x_continuous(labels=scales::label_number(accuracy=0.1, scale=1e-6, suffix="Mb"), breaks=scales::breaks_width(0.5e6))
+    print(p)
+  }
+  # dev.off()
 
   #
   # 4. PCA samples
